@@ -5,7 +5,8 @@ export type MessageSource = 'current' | 'history';
 export interface ToolCall {
   id: string;
   name: string;
-  arguments: Record<string, unknown>;
+  /** 流式累积过程中为 string（原始 JSON 文本片段），最终可解析为 Record<string, unknown> */
+  arguments: string | Record<string, unknown>;
 }
 
 export interface ToolResult {

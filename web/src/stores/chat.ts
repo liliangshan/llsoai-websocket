@@ -15,6 +15,8 @@ interface ChatState {
   activeRequestId: string | null;
   activeMessageId: string | null;
   abortController: AbortController | null;
+  /** 记录上一个 tool 名，用于 model.tool_call_delta 时判断是否需要插入新工具条目 */
+  lastToolName: string | null;
   historyLoading: boolean;
   error: string | null;
 }
@@ -37,6 +39,7 @@ export const useChatStore = defineStore('chat', {
     activeRequestId: null,
     activeMessageId: null,
     abortController: null,
+    lastToolName: null,
     historyLoading: false,
     error: null,
   }),
@@ -56,6 +59,7 @@ export const useChatStore = defineStore('chat', {
       const key = chatKey(workspaceId, instanceId);
       this.messagesByWorkspace[key] = [];
       delete this.loadedHistoryKeys[key];
+      this.lastToolName = null;
     },
     async sendNormal(request: ChatRequest) {
       this.error = null;
@@ -154,6 +158,7 @@ export const useChatStore = defineStore('chat', {
         };
         this.activeInstanceId = instanceId;
         this.activeMessageId = assistantId;
+        this.lastToolName = null;
       } catch (error) {
         const target = messages.find((item) => item.id === assistantId);
         if (target) {
@@ -269,11 +274,37 @@ export const useChatStore = defineStore('chat', {
           break;
         }
         case 'model.tool_call_started':
-        case 'model.tool_call_delta':
-        case 'model.tool_call_completed':
         case 'tool_call': {
           const toolCall = (payload.toolCall ?? data.toolCall) as ToolCall | undefined;
-          if (toolCall) target.toolCalls = [...(target.toolCalls ?? []), toolCall];
+          if (toolCall) {
+            this.lastToolName = typeof toolCall.name === 'string' ? toolCall.name : null;
+            target.toolCalls = [...(target.toolCalls ?? []), toolCall];
+          }
+          break;
+        }
+        case 'model.tool_call_delta': {
+          const toolCallId = typeof payload.toolCallId === 'string' ? payload.toolCallId : '';
+          const toolName = typeof payload.toolName === 'string' ? payload.toolName : '';
+          const argumentsDelta = typeof payload.argumentsDelta === 'string' ? payload.argumentsDelta : '';
+          if (!toolName) break;
+          const existing = target.toolCalls?.find((tc) => tc.id === toolCallId);
+          if (existing && this.lastToolName === toolName) {
+            // 同一工具的 delta，追加参数
+            if (argumentsDelta) existing.arguments = `${existing.arguments ?? ''}${argumentsDelta}`;
+          } else {
+            // 工具名变了，插入新的 toolCall 条目，并标注"正在调用：xxx"
+            this.lastToolName = toolName;
+            const newToolCall: ToolCall = {
+              id: toolCallId || newId('tool'),
+              name: toolName,
+              arguments: argumentsDelta,
+            };
+            target.toolCalls = [...(target.toolCalls ?? []), newToolCall];
+          }
+          break;
+        }
+        case 'model.tool_call_completed': {
+          // 仅记录工具名，不额外操作；delta 已在 model.tool_call_delta 中处理
           break;
         }
         case 'model.tool_result':
@@ -300,16 +331,19 @@ export const useChatStore = defineStore('chat', {
           const code = String(payload.errorCode ?? data.code ?? data.errorCode ?? '');
           const message = String(payload.errorMessage ?? data.message ?? data.errorMessage ?? '流式响应错误');
           target.error = { code, message };
+          this.lastToolName = null;
           break;
         }
         case 'done':
         case 'model.request_completed': {
           if (target.status !== 'error') target.status = 'done';
+          this.lastToolName = null;
           break;
         }
         case 'cancelled':
         case 'model.request_cancelled': {
-          target.status = 'cancelled';
+          if (target.status !== 'error') target.status = 'cancelled';
+          this.lastToolName = null;
           break;
         }
         default:
