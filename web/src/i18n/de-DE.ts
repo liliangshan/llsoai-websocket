@@ -14,6 +14,7 @@ export default {
     details: 'Details',
     history: 'Verlauf',
     language: 'Sprache',
+    callingTool: 'Rufe Werkzeug auf: ',
   },
   auth: {
     login: 'Anmelden',

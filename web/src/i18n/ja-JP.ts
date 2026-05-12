@@ -14,6 +14,7 @@ export default {
     details: '詳細',
     history: '履歴',
     language: '言語',
+    callingTool: 'ツール呼び出し：',
   },
   auth: {
     login: 'ログイン',

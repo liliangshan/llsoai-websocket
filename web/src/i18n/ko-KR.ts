@@ -14,6 +14,7 @@ export default {
     details: '세부 정보',
     history: '기록',
     language: '언어',
+    callingTool: '도구 호출 중：',
   },
   auth: {
     login: '로그인',

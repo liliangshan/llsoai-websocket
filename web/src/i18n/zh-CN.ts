@@ -14,6 +14,7 @@ export default {
     details: '详情',
     history: '历史',
     language: '语言',
+    callingTool: '正在调用工具：',
   },
   auth: {
     login: '登录',

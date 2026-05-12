@@ -14,6 +14,7 @@ export default {
     details: 'Details',
     history: 'History',
     language: 'Language',
+    callingTool: 'Calling tool: ',
   },
   auth: {
     login: 'Sign In',

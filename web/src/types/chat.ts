@@ -24,6 +24,8 @@ export interface ChatMessage {
   reasoning?: string;
   toolCalls?: ToolCall[];
   toolResults?: ToolResult[];
+  /** 当前正在流式调用中的工具名，显示「正在调用工具：xxx」 */
+  streamingToolName?: string;
   createdAt: string;
   status: MessageStatus;
   source: MessageSource;

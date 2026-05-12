@@ -294,6 +294,7 @@ export const useChatStore = defineStore('chat', {
           } else {
             // 工具名变了，插入新的 toolCall 条目，并标注"正在调用：xxx"
             this.lastToolName = toolName;
+            target.streamingToolName = toolName;
             const newToolCall: ToolCall = {
               id: toolCallId || newId('tool'),
               name: toolName,
@@ -304,11 +305,12 @@ export const useChatStore = defineStore('chat', {
           break;
         }
         case 'model.tool_call_completed': {
-          // 仅记录工具名，不额外操作；delta 已在 model.tool_call_delta 中处理
+          // 仅记录工具名，streamingToolName 由 delta 保持，流结束后统一清
           break;
         }
         case 'model.tool_result':
         case 'tool_result': {
+          target.streamingToolName = undefined;
           target.toolResults = [
             ...(target.toolResults ?? []),
             {
@@ -331,18 +333,21 @@ export const useChatStore = defineStore('chat', {
           const code = String(payload.errorCode ?? data.code ?? data.errorCode ?? '');
           const message = String(payload.errorMessage ?? data.message ?? data.errorMessage ?? '流式响应错误');
           target.error = { code, message };
+          target.streamingToolName = undefined;
           this.lastToolName = null;
           break;
         }
         case 'done':
         case 'model.request_completed': {
           if (target.status !== 'error') target.status = 'done';
+          target.streamingToolName = undefined;
           this.lastToolName = null;
           break;
         }
         case 'cancelled':
         case 'model.request_cancelled': {
           if (target.status !== 'error') target.status = 'cancelled';
+          target.streamingToolName = undefined;
           this.lastToolName = null;
           break;
         }
