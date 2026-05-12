@@ -364,34 +364,55 @@ func (h *Hub) failClientPending(c *Client, code string) {
 }
 
 // broadcastToSubscribers 将一条扩展回报的消息按 (userId + workspaceId) 推给对应订阅者。
-// 优先从 pending 取 userId/workspaceId；否则按 InstanceID 反查 client。
+//
+// 路由优先级（改造后）：
+//  1. 优先按 msg.InstanceID 反查 client，拿到权威的 (userId, workspaceId)；
+//     这样即使 pending 已过期/被清理，或扩展回报的 requestId 与 pending 不匹配，
+//     也能可靠地把事件广播给正确的 workspace 订阅者。
+//  2. 如果 InstanceID 反查不到（极少数情况，例如扩展未发 instanceId），
+//     再退回到从 pending 中拿到的 (userId, workspaceId)。
+//
+// 注：requestId 仍然用于 pending 的 1:1 匹配（HTTP 同步请求 / SSE 流），
+// 这里只是把"广播到 workspace 订阅者"这条路径与 requestId 解耦。
 func (h *Hub) broadcastToSubscribers(p *PendingRequest, msg protocol.Envelope) {
-	userID := uint64(0)
-	workspaceID := msg.WorkspaceID
-	if p != nil {
-		userID = p.UserID
-		if workspaceID == "" {
-			workspaceID = p.WorkspaceID
-		}
-	}
-	if userID == 0 {
+	var (
+		userID      uint64
+		workspaceID string
+	)
+
+	// 1) 优先按 instanceId 反查
+	if msg.InstanceID != "" {
 		h.mu.RLock()
 		c := h.byInstance[msg.InstanceID]
 		h.mu.RUnlock()
 		if c != nil {
 			s := c.Snapshot()
 			userID = s.UserID
-			if workspaceID == "" {
-				workspaceID = s.WorkspaceID
-			}
+			workspaceID = s.WorkspaceID
 		}
 	}
+
+	// 2) 反查失败则回退到 pending 中保存的路由信息
+	if userID == 0 && p != nil {
+		userID = p.UserID
+		workspaceID = p.WorkspaceID
+	}
+
+	// 3) workspaceID 仍然允许使用 envelope 里携带的（最终兜底）
+	if workspaceID == "" {
+		workspaceID = msg.WorkspaceID
+	}
+
 	if userID == 0 || workspaceID == "" {
+		log.Printf("[hub][broadcast] skip: cannot resolve route reqId=%s type=%s instanceId=%s workspaceId=%s",
+			msg.RequestID, msg.Type, msg.InstanceID, msg.WorkspaceID)
 		return
 	}
+
 	n := h.Broadcast(userID, workspaceID, msg)
 	if n > 0 {
-		log.Printf("[hub][broadcast] userId=%d workspaceId=%s type=%s reqId=%s delivered=%d", userID, workspaceID, msg.Type, msg.RequestID, n)
+		log.Printf("[hub][broadcast] userId=%d workspaceId=%s instanceId=%s type=%s reqId=%s delivered=%d (route_by=instanceId)",
+			userID, workspaceID, msg.InstanceID, msg.Type, msg.RequestID, n)
 	}
 }
 

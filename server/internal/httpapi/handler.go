@@ -467,7 +467,14 @@ func (h *Handler) handleWorkspaceStream(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
-// handleChatTrigger 触发型聊天：立即返回 requestId，实际事件通过 workspace SSE 推送。
+// handleChatTrigger 触发型聊天：仅做"路由 + 投递"，不注册 pending、不依赖 requestId。
+//
+// 设计要点：
+//   - 后端只生成一个 requestId 透传给扩展（便于扩展端日志关联），但不再用它做服务端路由。
+//   - 扩展回报任何事件时，只要带上 instanceId，wsserver.Hub.ResolvePending → broadcastToSubscribers
+//     会按 instanceId 反查 (userId, workspaceId)，把消息广播给所有订阅该 workspace 的 SSE。
+//   - 因此前端在 /api/workspaces/stream 这一条长连接上即可收到所有事件，按 instanceId 关联即可，
+//     不再需要在客户端按 requestId 做匹配；前端可直接用 trigger 返回的 instanceId 去监听。
 func (h *Handler) handleChatTrigger(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -496,29 +503,8 @@ func (h *Handler) handleChatTrigger(w http.ResponseWriter, r *http.Request) {
 		h.writeRouteError(w, err, "", req.WorkspaceID, req.InstanceID)
 		return
 	}
+	// requestId 仅用于扩展端的日志关联，服务端不再注册 pending
 	requestID := protocol.NewID("req")
-	// 注册一个轻量 pending（仅用于关联 userId + workspaceId，便于事件回报时 broadcastToSubscribers 拿到正确路由）
-	pending := &wsserver.PendingRequest{
-		RequestID:   requestID,
-		UserID:      userID,
-		WorkspaceID: req.WorkspaceID,
-		InstanceID:  client.InstanceID,
-		SessionID:   req.SessionID,
-		Mode:        wsserver.PendingModeStream,
-		State:       "created",
-		Stream:      make(chan protocol.Envelope, 1), // 占位通道，不实际消费
-		Response:    make(chan protocol.Envelope, 1),
-		CreatedAt:   time.Now(),
-		ExpiresAt:   time.Now().Add(h.HTTP.SSEMaxLifetime),
-		Client:      client,
-	}
-	h.Hub.AddPending(pending)
-	// 后台消费占位 stream，防止 sendStream 阻塞
-	go func(ch <-chan protocol.Envelope) {
-		for range ch {
-		}
-	}(pending.Stream)
-
 	msg := h.newServerMessage(protocol.TypeServerChatMessage, requestID, req.SessionID, req.WorkspaceID, map[string]any{
 		"text":                    req.Text,
 		"autoSend":                req.AutoSend,
@@ -527,19 +513,20 @@ func (h *Handler) handleChatTrigger(w http.ResponseWriter, r *http.Request) {
 		"expireAt":                time.Now().Add(2 * time.Minute).UTC().Format("2006-01-02T15:04:05.000Z"),
 	})
 	if err := client.Enqueue(msg); err != nil {
-		h.Hub.DeletePending(requestID)
 		h.writeError(w, http.StatusServiceUnavailable, "upstream_write_failed", "failed to write to extension", requestID, req.WorkspaceID, client.InstanceID)
 		return
 	}
-	log.Printf("[chat][trigger] reqId=%s userId=%d workspaceId=%s instanceId=%s text_len=%d", requestID, userID, req.WorkspaceID, client.InstanceID, len(req.Text))
+	log.Printf("[chat][trigger] reqId=%s userId=%d workspaceId=%s instanceId=%s text_len=%d (no pending, route_by=instanceId)",
+		requestID, userID, req.WorkspaceID, client.InstanceID, len(req.Text))
 	writeJSON(w, http.StatusOK, protocol.APIResponse{
 		RequestID:   requestID,
 		OK:          true,
 		WorkspaceID: req.WorkspaceID,
 		InstanceID:  client.InstanceID,
 		Payload: map[string]any{
-			"requestId": requestID,
-			"accepted":  true,
+			"requestId":  requestID,
+			"instanceId": client.InstanceID,
+			"accepted":   true,
 		},
 	})
 }
@@ -563,47 +550,61 @@ func (h *Handler) handleChatCancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req chatCancelRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.RequestID == "" {
-		h.writeError(w, http.StatusBadRequest, "invalid_cancel_request", "requestId required", "", req.WorkspaceID, req.InstanceID)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.writeError(w, http.StatusBadRequest, "invalid_cancel_request", "invalid request body", "", req.WorkspaceID, req.InstanceID)
 		return
 	}
 	workspaceID := req.WorkspaceID
 	instanceID := req.InstanceID
-	if p, ok := h.Hub.GetPending(req.RequestID); ok {
-		if p.UserID != userID {
-			h.writeError(w, http.StatusForbidden, "forbidden", "not your request", req.RequestID, workspaceID, instanceID)
-			return
-		}
-		if workspaceID == "" {
-			workspaceID = p.WorkspaceID
-		}
-		if instanceID == "" {
-			instanceID = p.InstanceID
+
+	// Trigger 模式下服务端不再保存 pending，因此优先按请求体里的 instanceId 路由；
+	// 仍兼容旧的 /api/chat、/api/chat/stream 这类带 pending 的请求：如果客户端
+	// 只给了 requestId，就回退到 pending 表里取出对应的 workspaceId / instanceId。
+	if req.RequestID != "" {
+		if p, ok := h.Hub.GetPending(req.RequestID); ok {
+			if p.UserID != userID {
+				h.writeError(w, http.StatusForbidden, "forbidden", "not your request", req.RequestID, workspaceID, instanceID)
+				return
+			}
+			if workspaceID == "" {
+				workspaceID = p.WorkspaceID
+			}
+			if instanceID == "" {
+				instanceID = p.InstanceID
+			}
 		}
 	}
-	if workspaceID == "" {
-		h.writeError(w, http.StatusBadRequest, "workspace_required", "workspaceId is required", req.RequestID, "", "")
+
+	if instanceID == "" && workspaceID == "" {
+		h.writeError(w, http.StatusBadRequest, "instance_required", "instanceId or workspaceId is required", req.RequestID, "", "")
 		return
 	}
+
 	client, err := h.Hub.Route(userID, workspaceID, instanceID)
 	if err != nil {
 		h.writeRouteError(w, err, req.RequestID, workspaceID, instanceID)
 		return
 	}
+	// 路由成功后，workspaceID 用 client 实际所属，避免请求体里给的不一致
+	if workspaceID == "" {
+		workspaceID = client.WorkspaceID
+	}
 	cancelMsg := h.newServerMessage("server.cancel_request", req.RequestID, "", workspaceID, map[string]any{
-		"requestId": req.RequestID,
-		"reason":    req.Reason,
+		"requestId":  req.RequestID,
+		"instanceId": client.InstanceID,
+		"reason":     req.Reason,
 	})
 	if err := client.Enqueue(cancelMsg); err != nil {
 		h.writeError(w, http.StatusServiceUnavailable, "upstream_write_failed", "failed to write to extension", req.RequestID, workspaceID, client.InstanceID)
 		return
 	}
-	log.Printf("[chat][cancel] reqId=%s userId=%d workspaceId=%s instanceId=%s reason=%q", req.RequestID, userID, workspaceID, client.InstanceID, req.Reason)
+	log.Printf("[chat][cancel] reqId=%s userId=%d workspaceId=%s instanceId=%s reason=%q (route_by=instanceId)",
+		req.RequestID, userID, workspaceID, client.InstanceID, req.Reason)
 	writeJSON(w, http.StatusOK, protocol.APIResponse{
 		RequestID:   req.RequestID,
 		OK:          true,
 		WorkspaceID: workspaceID,
 		InstanceID:  client.InstanceID,
-		Payload:     map[string]any{"requestId": req.RequestID, "cancelled": true},
+		Payload:     map[string]any{"requestId": req.RequestID, "instanceId": client.InstanceID, "cancelled": true},
 	})
 }

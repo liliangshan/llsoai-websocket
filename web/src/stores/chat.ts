@@ -7,8 +7,11 @@ import { toUserMessage } from '@/utils/errors';
 interface ChatState {
   messagesByWorkspace: Record<string, ChatMessage[]>;
   loadedHistoryKeys: Record<string, boolean>;
-  /** requestId -> { workspaceId, instanceId?, messageId } 路由表，用于把长 SSE 事件分发回正确消息 */
+  /** instanceId -> { workspaceId, messageId } 路由表，用于把长 SSE 事件分发回正确消息 */
+  pendingByInstance: Record<string, { workspaceId: string; messageId: string }>;
+  /** requestId -> pending（兼容旧版 /api/chat/stream 等仍用 requestId 的场景） */
   pendingByRequest: Record<string, { workspaceId: string; instanceId?: string; messageId: string }>;
+  activeInstanceId: string | null;
   activeRequestId: string | null;
   activeMessageId: string | null;
   abortController: AbortController | null;
@@ -28,7 +31,9 @@ export const useChatStore = defineStore('chat', {
   state: (): ChatState => ({
     messagesByWorkspace: {},
     loadedHistoryKeys: {},
+    pendingByInstance: {},
     pendingByRequest: {},
+    activeInstanceId: null,
     activeRequestId: null,
     activeMessageId: null,
     abortController: null,
@@ -36,7 +41,7 @@ export const useChatStore = defineStore('chat', {
     error: null,
   }),
   getters: {
-    isStreaming: (state) => Boolean(state.activeRequestId),
+    isStreaming: (state) => Boolean(state.activeInstanceId || state.activeRequestId),
   },
   actions: {
     getMessages(workspaceId: string, instanceId?: string): ChatMessage[] {
@@ -138,16 +143,16 @@ export const useChatStore = defineStore('chat', {
           this.error = toUserMessage(response.error);
           return;
         }
-        const requestId = response.payload.requestId;
+        const instanceId = response.payload.instanceId;
         if (target) {
           target.status = 'streaming';
         }
-        this.pendingByRequest[requestId] = {
+        // 核心：按 instanceId 分发，SSE 事件中带 instanceId 即命中
+        this.pendingByInstance[instanceId] = {
           workspaceId: request.workspaceId,
-          instanceId: request.instanceId,
           messageId: assistantId,
         };
-        this.activeRequestId = requestId;
+        this.activeInstanceId = instanceId;
         this.activeMessageId = assistantId;
       } catch (error) {
         const target = messages.find((item) => item.id === assistantId);
@@ -160,17 +165,46 @@ export const useChatStore = defineStore('chat', {
       }
     },
     /**
-     * 工作区长 SSE 收到事件时调用：按 event.data.requestId 找到 pending，分发到对应消息。
+     * 工作区长 SSE 收到事件时调用：优先按 event.instanceId 路由（基于 instanceId 分发）；
+     * 兼容 fallback：若无 instanceId 则按 requestId 路由（保留旧 /api/chat/stream 兼容路径）。
      */
     handleWorkspaceEvent(event: ParsedSseEvent, workspaceId: string) {
-      // 服务端 ready/ping 等控制事件无需路由到消息
       if (event.event === 'ready') return;
       const data = (event.data && typeof event.data === 'object' ? (event.data as Record<string, unknown>) : {}) as Record<string, unknown>;
+
+      // 优先：按 instanceId 路由（trigger 触发型路径）
+      const instanceId = typeof data.instanceId === 'string' ? data.instanceId : '';
+      if (instanceId) {
+        const pending = this.pendingByInstance[instanceId];
+        if (pending && pending.workspaceId === workspaceId) {
+          const messages = this.ensureMessages(pending.workspaceId);
+          const target = messages.find((item) => item.id === pending.messageId);
+          if (target) {
+            this.applyEventToMessage(target, event);
+            if (
+              event.event === 'model.request_completed' ||
+              event.event === 'model.request_cancelled' ||
+              event.event === 'model.request_error' ||
+              event.event === 'done' ||
+              event.event === 'cancelled' ||
+              event.event === 'error'
+            ) {
+              delete this.pendingByInstance[instanceId];
+              if (this.activeInstanceId === instanceId) {
+                this.activeInstanceId = null;
+                this.activeMessageId = null;
+              }
+            }
+          }
+          return;
+        }
+      }
+
+      // 兼容 fallback：按 requestId 路由（保留旧 /api/chat/stream 路径）
       const requestId = typeof data.requestId === 'string' ? data.requestId : '';
       if (!requestId) return;
       const pending = this.pendingByRequest[requestId];
       if (!pending) return;
-      // 不同 workspace 的事件不要串台
       if (pending.workspaceId !== workspaceId) return;
       const messages = this.ensureMessages(pending.workspaceId, pending.instanceId);
       const target = messages.find((item) => item.id === pending.messageId);
@@ -269,6 +303,7 @@ export const useChatStore = defineStore('chat', {
       }
     },
     async cancelActive() {
+      const instanceId = this.activeInstanceId;
       const requestId = this.activeRequestId;
       const messageId = this.activeMessageId;
       if (this.abortController) {
@@ -282,6 +317,22 @@ export const useChatStore = defineStore('chat', {
           target.status = 'cancelled';
         }
       }
+      // 优先按 instanceId 取消（trigger 触发型）
+      if (instanceId) {
+        delete this.pendingByInstance[instanceId];
+        this.activeInstanceId = null;
+        this.activeMessageId = null;
+        try {
+          await cancelChat({
+            instanceId,
+            reason: 'user_cancelled',
+          });
+        } catch (error) {
+          this.error = toUserMessage(error);
+        }
+        return;
+      }
+      // 兼容 fallback：按 requestId 取消（旧路径）
       if (requestId) {
         const pending = this.pendingByRequest[requestId];
         delete this.pendingByRequest[requestId];

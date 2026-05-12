@@ -12,6 +12,7 @@ export async function sendChat(request: ChatRequest): Promise<ApiResponse<ChatPa
 
 export interface TriggerChatPayload {
   requestId: string;
+  instanceId: string;
   accepted: boolean;
 }
 
@@ -21,7 +22,7 @@ export async function triggerChat(request: ChatRequest): Promise<ApiResponse<Tri
 }
 
 export interface CancelChatRequest {
-  requestId: string;
+  requestId?: string;
   workspaceId?: string;
   instanceId?: string;
   reason?: string;
