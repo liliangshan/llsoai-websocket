@@ -177,7 +177,7 @@ export const useChatStore = defineStore('chat', {
       if (instanceId) {
         const pending = this.pendingByInstance[instanceId];
         if (pending && pending.workspaceId === workspaceId) {
-          const messages = this.ensureMessages(pending.workspaceId);
+          const messages = this.ensureMessages(pending.workspaceId, instanceId);
           const target = messages.find((item) => item.id === pending.messageId);
           if (target) {
             this.applyEventToMessage(target, event);
@@ -243,14 +243,28 @@ export const useChatStore = defineStore('chat', {
         }
         case 'model.text_delta':
         case 'content_delta': {
-          const delta = typeof payload.delta === 'string' ? payload.delta : typeof data.delta === 'string' ? (data.delta as string) : '';
+          const delta =
+            typeof payload.delta === 'string'
+              ? payload.delta
+              : typeof data.delta === 'string'
+                ? (data.delta as string)
+                : typeof (data.payload as Record<string, unknown>)?.delta === 'string'
+                  ? ((data.payload as Record<string, unknown>).delta as string)
+                  : '';
           if (delta) target.content += delta;
           target.status = 'streaming';
           break;
         }
         case 'model.reasoning_delta':
         case 'reasoning_delta': {
-          const delta = typeof payload.delta === 'string' ? payload.delta : typeof data.delta === 'string' ? (data.delta as string) : '';
+          const delta =
+            typeof payload.delta === 'string'
+              ? payload.delta
+              : typeof data.delta === 'string'
+                ? (data.delta as string)
+                : typeof (data.payload as Record<string, unknown>)?.delta === 'string'
+                  ? ((data.payload as Record<string, unknown>).delta as string)
+                  : '';
           target.reasoning = `${target.reasoning ?? ''}${delta}`;
           break;
         }
