@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 import { cancelChat, loadHistory, sendChat, streamChat, triggerChat } from '@/api/chat';
-import type { ChatMessage, ChatPayload, ChatRequest, HistoryPayload, ToolCall, ToolResult } from '@/types/chat';
+import type { ChatMessage, ChatPayload, ChatRequest, HistoryPayload, MessageRole, ToolCall, ToolResult } from '@/types/chat';
 import type { ParsedSseEvent } from '@/types/sse';
 import { toUserMessage } from '@/utils/errors';
 
@@ -17,6 +17,8 @@ interface ChatState {
   abortController: AbortController | null;
   /** 记录上一个 tool 名，用于 model.tool_call_delta 时判断是否需要插入新工具条目 */
   lastToolName: string | null;
+  /** 标记当前活跃消息的角色，用于 fallback 路由：user 主动发消息后等待 assistant 回复时设为 'user'，收到首个 content 后自动建 assistant 消息并置为 'assistant' */
+  lastMessageRole: MessageRole | null;
   historyLoading: boolean;
   error: string | null;
 }
@@ -40,6 +42,7 @@ export const useChatStore = defineStore('chat', {
     activeMessageId: null,
     abortController: null,
     lastToolName: null,
+    lastMessageRole: null,
     historyLoading: false,
     error: null,
   }),
@@ -59,6 +62,7 @@ export const useChatStore = defineStore('chat', {
       const key = chatKey(workspaceId, instanceId);
       this.messagesByWorkspace[key] = [];
       delete this.loadedHistoryKeys[key];
+      this.lastMessageRole = null;
       this.lastToolName = null;
     },
     async sendNormal(request: ChatRequest) {
@@ -74,6 +78,7 @@ export const useChatStore = defineStore('chat', {
         status: 'done',
         source: 'current',
       });
+      this.lastMessageRole = 'user';
       const assistantId = newId('assistant');
       messages.push({
         id: assistantId,
@@ -85,6 +90,7 @@ export const useChatStore = defineStore('chat', {
         status: 'sending',
         source: 'current',
       });
+      this.lastMessageRole = 'assistant';
       try {
         const response = await sendChat(request);
         const target = messages.find((item) => item.id === assistantId);
@@ -123,6 +129,7 @@ export const useChatStore = defineStore('chat', {
         status: 'done',
         source: 'current',
       });
+      this.lastMessageRole = 'user';
       const assistantId = newId('assistant');
       messages.push({
         id: assistantId,
@@ -136,6 +143,7 @@ export const useChatStore = defineStore('chat', {
         toolCalls: [],
         toolResults: [],
       });
+      this.lastMessageRole = 'assistant';
       try {
         const response = await triggerChat(request);
         const target = messages.find((item) => item.id === assistantId);
@@ -207,7 +215,33 @@ export const useChatStore = defineStore('chat', {
 
       // 兼容 fallback：按 requestId 路由（保留旧 /api/chat/stream 路径）
       const requestId = typeof data.requestId === 'string' ? data.requestId : '';
-      if (!requestId) return;
+      if (!requestId) {
+        // instanceId 和 requestId 两条路由都失败时的最后 fallback：
+        // 检查当前活跃 workspace/instance 的最后一条消息，如果角色是 user，
+        // 自动创建一个空的 assistant 消息来承接后端推送的内容事件。
+        const msgs = this.ensureMessages(workspaceId, this.activeInstanceId ?? undefined);
+        const last = msgs[msgs.length - 1];
+        if (last?.role === 'user') {
+          const fallbackAssistantId = newId('assistant');
+          msgs.push({
+            id: fallbackAssistantId,
+            workspaceId,
+            instanceId: this.activeInstanceId ?? undefined,
+            role: 'assistant',
+            content: '',
+            createdAt: new Date().toISOString(),
+            status: 'streaming',
+            source: 'current',
+            toolCalls: [],
+            toolResults: [],
+          });
+          this.activeMessageId = fallbackAssistantId;
+          this.lastMessageRole = 'assistant';
+          const target = msgs[msgs.length - 1];
+          this.applyEventToMessage(target, event);
+        }
+        return;
+      }
       const pending = this.pendingByRequest[requestId];
       if (!pending) return;
       if (pending.workspaceId !== workspaceId) return;
@@ -471,6 +505,7 @@ export const useChatStore = defineStore('chat', {
           const messages = mapHistory(response.payload, request.workspaceId, request.instanceId);
           this.messagesByWorkspace[key] = messages;
           this.loadedHistoryKeys[key] = true;
+          this.lastMessageRole = messages[messages.length - 1]?.role ?? null;
         } else {
           this.error = toUserMessage(response.error);
         }
