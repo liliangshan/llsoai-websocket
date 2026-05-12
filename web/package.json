@@ -1,1 +1,50 @@
-{"scripts":{"dev":"vite --host 0.0.0.0","build":"vue-tsc --noEmit && vite build","preview":"vite preview --host 0.0.0.0","typecheck":"vue-tsc --noEmit"},"dependencies":{"@element-plus/icons-vue":"latest","@vitejs/plugin-vue":"latest","axios":"latest","element-plus":"latest","pinia":"latest","typescript":"latest","vite":"latest","vue":"latest","vue-i18n":"latest","vue-router":"latest"},"devDependencies":{"@types/node":"^25.7.0","sass":"latest","vue-tsc":"latest"}}
+{
+  "name": "llsoai-websocket-web",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "vue-tsc --noEmit && vite build",
+    "build:pwa": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "preview:pwa": "vite preview --host 0.0.0.0 --port 4173",
+    "typecheck": "vue-tsc --noEmit",
+    "cap:sync": "npm run build && cap sync",
+    "cap:open:ios": "cap open ios",
+    "cap:open:android": "cap open android",
+    "cap:run:ios": "npm run build && cap sync ios && cap run ios",
+    "cap:run:android": "npm run build && cap sync android && cap run android",
+    "cap:add:ios": "cap add ios",
+    "cap:add:android": "cap add android",
+    "build:ios": "npm run build && cap sync ios && cap open ios",
+    "build:android": "npm run build && cap sync android && cap open android"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.1.2",
+    "@capacitor/app": "^6.0.1",
+    "@capacitor/core": "^6.1.2",
+    "@capacitor/ios": "^6.1.2",
+    "@capacitor/keyboard": "^6.0.2",
+    "@capacitor/preferences": "^6.0.2",
+    "@capacitor/splash-screen": "^6.0.2",
+    "@capacitor/status-bar": "^6.0.1",
+    "@element-plus/icons-vue": "latest",
+    "@vitejs/plugin-vue": "latest",
+    "axios": "latest",
+    "element-plus": "latest",
+    "pinia": "latest",
+    "typescript": "latest",
+    "vite": "latest",
+    "vue": "latest",
+    "vue-i18n": "latest",
+    "vue-router": "latest"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.1.2",
+    "sass": "latest",
+    "vite-plugin-pwa": "^0.20.5",
+    "vue-tsc": "latest",
+    "workbox-window": "^7.1.0"
+  },
+  "type": "module"
+}

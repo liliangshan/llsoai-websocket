@@ -1,10 +1,11 @@
 import axios from 'axios';
 import { useAuthStore } from '@/stores/auth';
 import { readToken } from '@/utils/token';
+import { resolveApiBaseUrl } from '@/utils/platform';
 import type { ApiFailure, ApiResponse, LegacyApiEnvelope } from '@/types/api';
 
 export const apiClient = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL || '/api',
+  baseURL: resolveApiBaseUrl(),
   timeout: 120000,
 });
 
