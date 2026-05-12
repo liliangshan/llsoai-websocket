@@ -1,0 +1,36 @@
+app:
+  host: "0.0.0.0"
+  port: 29081
+
+database:
+  host: "127.0.0.1"
+  port: 3306
+  username: "openai"
+  password: "uitT46093008"
+  name: "openai"
+  charset: "utf8mb4"
+  max_open_conns: 25
+  max_idle_conns: 5
+  conn_max_lifetime: 5m
+
+websocket:
+  path: "/ws"
+  read_timeout: 60s
+  write_timeout: 10s
+  heartbeat_timeout: 90s
+  send_queue_size: 256
+
+http:
+  request_timeout: 120s
+  history_timeout: 30s
+  sse_ping_interval: 15s
+  sse_max_lifetime: 10m
+  max_history_response_bytes: 2097152
+  max_history_message_bytes: 32768
+
+auth:
+  api_keys: []
+  jwt:
+    secret: "your-super-secret-jwt-key-change-in-production"
+    expiration: 720h
+  bcrypt_cost: 10

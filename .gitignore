@@ -1,0 +1,29 @@
+# 构建产物
+/bin/
+
+# 前端
+web/node_modules/
+web/dist/
+web/.vite/
+web/*.log
+
+# 嵌入前端目录的产物（由 build.sh 重新生成，仓库内只保留占位 index.html 与 README.md）
+server/cmd/server/web/assets/
+
+# Go
+*.test
+*.out
+server/server
+
+# 系统
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+.vscode/**
+.setting*
+.setting*/
+**/.vscode/
+**/.setting*
