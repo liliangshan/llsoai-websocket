@@ -388,7 +388,25 @@ export const useChatStore = defineStore('chat', {
           const toolCall = (payload.toolCall ?? data.toolCall) as ToolCall | undefined;
           if (toolCall) {
             this.lastToolName = typeof toolCall.name === 'string' ? toolCall.name : null;
+            if (this.lastToolName) target.streamingToolName = this.lastToolName;
             target.toolCalls = [...(target.toolCalls ?? []), toolCall];
+          } else {
+            const toolName = String(payload.toolName ?? data.toolName ?? '');
+            if (!toolName) break;
+            const toolCallId = String(payload.toolCallId ?? data.toolCallId ?? newId('tool'));
+            this.lastToolName = toolName;
+            target.streamingToolName = toolName;
+            const existing = target.toolCalls?.find((tc) => tc.id === toolCallId);
+            if (!existing) {
+              target.toolCalls = [
+                ...(target.toolCalls ?? []),
+                {
+                  id: toolCallId,
+                  name: toolName,
+                  arguments: '',
+                },
+              ];
+            }
           }
           break;
         }
