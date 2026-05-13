@@ -1,8 +1,8 @@
 <template>
   <section class="chat-panel">
     <div class="chat-header">
-      <div v-if="workspace">{{ workspace.metadata?.workspaceName || workspace.workspaceId }} / {{ workspace.instanceId }}</div>
-      <div v-else>{{ t('workspace.needSelect') }}</div>
+      <div v-if="!workspace">{{ t('workspace.needSelect') }}</div>
+      <div class="chat-version">1.0.3</div>
     </div>
     <ErrorAlert :message="chat.error" />
     <ChatMessageList :messages="messages" />

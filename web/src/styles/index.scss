@@ -12,7 +12,8 @@ body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sa
 .token-settings { border-top: 1px solid #e5e7eb; padding: 16px; }
 .user-line, .token-line { margin-bottom: 8px; font-size: 13px; word-break: break-all; }
 .chat-panel { height: 100vh; display: flex; flex-direction: column; }
-.chat-header { height: 56px; display: flex; align-items: center; padding: 0 20px; border-bottom: 1px solid #e5e7eb; background: #fff; font-weight: 600; }
+.chat-header { height: 56px; display: flex; align-items: center; justify-content: space-between; padding: 0 20px; border-bottom: 1px solid #e5e7eb; background: #fff; font-weight: 600; }
+.chat-version { margin-left: auto; color: #6b7280; font-size: 13px; font-weight: 500; }
 .message-list { flex: 1; overflow: auto; padding: 20px; }
 .message-item { display: flex; margin-bottom: 14px; }
 .message-item.user { justify-content: flex-end; }
