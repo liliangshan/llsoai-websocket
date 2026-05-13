@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 import { cancelChat, loadHistory, sendChat, streamChat, triggerChat } from '@/api/chat';
-import type { ChatMessage, ChatPayload, ChatRequest, HistoryPayload, MessageRole, ToolCall, ToolResult } from '@/types/chat';
+import type { ChatMessage, ChatPayload, ChatRequest, HistoryPayload, ToolCall, ToolResult } from '@/types/chat';
 import type { ParsedSseEvent } from '@/types/sse';
 import { toUserMessage } from '@/utils/errors';
 
@@ -8,17 +8,17 @@ interface ChatState {
   messagesByWorkspace: Record<string, ChatMessage[]>;
   loadedHistoryKeys: Record<string, boolean>;
   /** instanceId -> { workspaceId, messageId } 路由表，用于把长 SSE 事件分发回正确消息 */
-  pendingByInstance: Record<string, { workspaceId: string; messageId: string }>;
+  pendingByInstance: Record<string, { workspaceId: string; instanceId?: string; messageId: string }>;
   /** requestId -> pending（兼容旧版 /api/chat/stream 等仍用 requestId 的场景） */
   pendingByRequest: Record<string, { workspaceId: string; instanceId?: string; messageId: string }>;
+  /** chatKey -> 本地占位 assistant，用于 trigger 返回前或 pending 丢失时承接无路由事件 */
+  fallbackByChatKey: Record<string, { workspaceId: string; instanceId?: string; messageId: string; createdAt: number }>;
   activeInstanceId: string | null;
   activeRequestId: string | null;
   activeMessageId: string | null;
   abortController: AbortController | null;
   /** 记录上一个 tool 名，用于 model.tool_call_delta 时判断是否需要插入新工具条目 */
   lastToolName: string | null;
-  /** 标记当前活跃消息的角色，用于 fallback 路由：user 主动发消息后等待 assistant 回复时设为 'user'，收到首个 content 后自动建 assistant 消息并置为 'assistant' */
-  lastMessageRole: MessageRole | null;
   historyLoading: boolean;
   error: string | null;
 }
@@ -37,12 +37,12 @@ export const useChatStore = defineStore('chat', {
     loadedHistoryKeys: {},
     pendingByInstance: {},
     pendingByRequest: {},
+    fallbackByChatKey: {},
     activeInstanceId: null,
     activeRequestId: null,
     activeMessageId: null,
     abortController: null,
     lastToolName: null,
-    lastMessageRole: null,
     historyLoading: false,
     error: null,
   }),
@@ -62,7 +62,13 @@ export const useChatStore = defineStore('chat', {
       const key = chatKey(workspaceId, instanceId);
       this.messagesByWorkspace[key] = [];
       delete this.loadedHistoryKeys[key];
-      this.lastMessageRole = null;
+      delete this.fallbackByChatKey[key];
+      for (const [id, pending] of Object.entries(this.pendingByInstance)) {
+        if (pending.workspaceId === workspaceId && pending.instanceId === instanceId) delete this.pendingByInstance[id];
+      }
+      for (const [id, pending] of Object.entries(this.pendingByRequest)) {
+        if (pending.workspaceId === workspaceId && pending.instanceId === instanceId) delete this.pendingByRequest[id];
+      }
       this.lastToolName = null;
     },
     async sendNormal(request: ChatRequest) {
@@ -78,7 +84,6 @@ export const useChatStore = defineStore('chat', {
         status: 'done',
         source: 'current',
       });
-      this.lastMessageRole = 'user';
       const assistantId = newId('assistant');
       messages.push({
         id: assistantId,
@@ -90,7 +95,6 @@ export const useChatStore = defineStore('chat', {
         status: 'sending',
         source: 'current',
       });
-      this.lastMessageRole = 'assistant';
       try {
         const response = await sendChat(request);
         const target = messages.find((item) => item.id === assistantId);
@@ -129,7 +133,6 @@ export const useChatStore = defineStore('chat', {
         status: 'done',
         source: 'current',
       });
-      this.lastMessageRole = 'user';
       const assistantId = newId('assistant');
       messages.push({
         id: assistantId,
@@ -143,7 +146,13 @@ export const useChatStore = defineStore('chat', {
         toolCalls: [],
         toolResults: [],
       });
-      this.lastMessageRole = 'assistant';
+      const fallbackKey = chatKey(request.workspaceId, request.instanceId);
+      this.fallbackByChatKey[fallbackKey] = {
+        workspaceId: request.workspaceId,
+        instanceId: request.instanceId,
+        messageId: assistantId,
+        createdAt: Date.now(),
+      };
       try {
         const response = await triggerChat(request);
         const target = messages.find((item) => item.id === assistantId);
@@ -162,6 +171,7 @@ export const useChatStore = defineStore('chat', {
         // 核心：按 instanceId 分发，SSE 事件中带 instanceId 即命中
         this.pendingByInstance[instanceId] = {
           workspaceId: request.workspaceId,
+          instanceId: request.instanceId,
           messageId: assistantId,
         };
         this.activeInstanceId = instanceId;
@@ -183,14 +193,17 @@ export const useChatStore = defineStore('chat', {
      */
     handleWorkspaceEvent(event: ParsedSseEvent, workspaceId: string) {
       if (event.event === 'ready') return;
+      if (!workspaceId) return;
       const data = (event.data && typeof event.data === 'object' ? (event.data as Record<string, unknown>) : {}) as Record<string, unknown>;
+      const eventWorkspaceId = typeof data.workspaceId === 'string' ? data.workspaceId : '';
+      if (eventWorkspaceId && eventWorkspaceId !== workspaceId) return;
 
       // 优先：按 instanceId 路由（trigger 触发型路径）
       const instanceId = typeof data.instanceId === 'string' ? data.instanceId : '';
       if (instanceId) {
         const pending = this.pendingByInstance[instanceId];
         if (pending && pending.workspaceId === workspaceId) {
-          const messages = this.ensureMessages(pending.workspaceId, instanceId);
+          const messages = this.ensureMessages(pending.workspaceId, pending.instanceId);
           const target = messages.find((item) => item.id === pending.messageId);
           if (target) {
             this.applyEventToMessage(target, event);
@@ -203,6 +216,7 @@ export const useChatStore = defineStore('chat', {
               event.event === 'error'
             ) {
               delete this.pendingByInstance[instanceId];
+              this.deleteFallbackByMessageId(pending.messageId);
               if (this.activeInstanceId === instanceId) {
                 this.activeInstanceId = null;
                 this.activeMessageId = null;
@@ -215,53 +229,54 @@ export const useChatStore = defineStore('chat', {
 
       // 兼容 fallback：按 requestId 路由（保留旧 /api/chat/stream 路径）
       const requestId = typeof data.requestId === 'string' ? data.requestId : '';
-      if (!requestId) {
-        // instanceId 和 requestId 两条路由都失败时的最后 fallback：
-        // 检查当前活跃 workspace/instance 的最后一条消息，如果角色是 user，
-        // 自动创建一个空的 assistant 消息来承接后端推送的内容事件。
-        const msgs = this.ensureMessages(workspaceId, this.activeInstanceId ?? undefined);
-        const last = msgs[msgs.length - 1];
-        if (last?.role === 'user') {
-          const fallbackAssistantId = newId('assistant');
-          msgs.push({
-            id: fallbackAssistantId,
-            workspaceId,
-            instanceId: this.activeInstanceId ?? undefined,
-            role: 'assistant',
-            content: '',
-            createdAt: new Date().toISOString(),
-            status: 'streaming',
-            source: 'current',
-            toolCalls: [],
-            toolResults: [],
-          });
-          this.activeMessageId = fallbackAssistantId;
-          this.lastMessageRole = 'assistant';
-          const target = msgs[msgs.length - 1];
-          this.applyEventToMessage(target, event);
+      if (requestId) {
+        const pending = this.pendingByRequest[requestId];
+        if (pending && pending.workspaceId === workspaceId) {
+          const messages = this.ensureMessages(pending.workspaceId, pending.instanceId);
+          const target = messages.find((item) => item.id === pending.messageId);
+          if (target) {
+            this.applyEventToMessage(target, event);
+            if (this.isTerminalEvent(event.event)) {
+              delete this.pendingByRequest[requestId];
+              this.deleteFallbackByMessageId(pending.messageId);
+              if (this.activeRequestId === requestId) {
+                this.activeRequestId = null;
+                this.activeMessageId = null;
+              }
+            }
+          }
+          return;
         }
-        return;
       }
-      const pending = this.pendingByRequest[requestId];
-      if (!pending) return;
-      if (pending.workspaceId !== workspaceId) return;
-      const messages = this.ensureMessages(pending.workspaceId, pending.instanceId);
-      const target = messages.find((item) => item.id === pending.messageId);
+
+      // instanceId 与 requestId 都未命中时，使用 sendStream 创建的本地占位 assistant 承接事件。
+      this.applyUnroutedFallback(event, workspaceId);
+    },
+    isTerminalEvent(eventName: string): boolean {
+      return (
+        eventName === 'model.request_completed' ||
+        eventName === 'model.request_cancelled' ||
+        eventName === 'model.request_error' ||
+        eventName === 'done' ||
+        eventName === 'cancelled' ||
+        eventName === 'error'
+      );
+    },
+    applyUnroutedFallback(event: ParsedSseEvent, workspaceId: string) {
+      const fallback = Object.entries(this.fallbackByChatKey)
+        .filter(([, item]) => item.workspaceId === workspaceId)
+        .sort(([, a], [, b]) => b.createdAt - a.createdAt)[0]?.[1];
+      if (!fallback) return;
+      const messages = this.ensureMessages(fallback.workspaceId, fallback.instanceId);
+      const target = messages.find((item) => item.id === fallback.messageId);
       if (!target) return;
       this.applyEventToMessage(target, event);
-      if (
-        event.event === 'model.request_completed' ||
-        event.event === 'model.request_cancelled' ||
-        event.event === 'model.request_error' ||
-        event.event === 'done' ||
-        event.event === 'cancelled' ||
-        event.event === 'error'
-      ) {
-        delete this.pendingByRequest[requestId];
-        if (this.activeRequestId === requestId) {
-          this.activeRequestId = null;
-          this.activeMessageId = null;
-        }
+      if (target.status === 'sending') target.status = 'streaming';
+      if (this.isTerminalEvent(event.event)) this.deleteFallbackByMessageId(fallback.messageId);
+    },
+    deleteFallbackByMessageId(messageId: string) {
+      for (const [key, fallback] of Object.entries(this.fallbackByChatKey)) {
+        if (fallback.messageId === messageId) delete this.fallbackByChatKey[key];
       }
     },
     handleStreamEvent(workspaceId: string, instanceId: string | undefined, fallbackMessageId: string, event: ParsedSseEvent) {
@@ -505,7 +520,6 @@ export const useChatStore = defineStore('chat', {
           const messages = mapHistory(response.payload, request.workspaceId, request.instanceId);
           this.messagesByWorkspace[key] = messages;
           this.loadedHistoryKeys[key] = true;
-          this.lastMessageRole = messages[messages.length - 1]?.role ?? null;
         } else {
           this.error = toUserMessage(response.error);
         }
