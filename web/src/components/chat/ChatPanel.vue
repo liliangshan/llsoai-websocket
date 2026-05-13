@@ -73,7 +73,7 @@ async function openStream(workspaceId: string, instanceId?: string, retry = 0) {
           retry = 0;
         },
         onEvent: (event) => {
-          chat.handleWorkspaceEvent(event, workspaceId);
+          chat.handleWorkspaceEvent(event, workspaceId, instanceId);
         },
         onError: (error) => {
           chat.error = toUserMessage(error);

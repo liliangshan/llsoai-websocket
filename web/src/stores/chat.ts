@@ -205,7 +205,7 @@ export const useChatStore = defineStore('chat', {
      * 工作区长 SSE 收到事件时调用：优先按 event.instanceId 路由（基于 instanceId 分发）；
      * 兼容 fallback：若无 instanceId 则按 requestId 路由（保留旧 /api/chat/stream 兼容路径）。
      */
-    handleWorkspaceEvent(event: ParsedSseEvent, workspaceId: string) {
+    handleWorkspaceEvent(event: ParsedSseEvent, workspaceId: string, currentInstanceId?: string) {
       if (event.event === 'ready') return;
       if (!workspaceId) return;
       const data = (event.data && typeof event.data === 'object' ? (event.data as Record<string, unknown>) : {}) as Record<string, unknown>;
@@ -264,7 +264,7 @@ export const useChatStore = defineStore('chat', {
       }
 
       // instanceId 与 requestId 都未命中时，使用 sendStream 创建的本地占位 assistant 承接事件。
-      this.applyUnroutedFallback(event, workspaceId);
+      this.applyUnroutedFallback(event, workspaceId, currentInstanceId);
     },
     isTerminalEvent(eventName: string): boolean {
       return (
@@ -276,16 +276,16 @@ export const useChatStore = defineStore('chat', {
         eventName === 'error'
       );
     },
-    applyUnroutedFallback(event: ParsedSseEvent, workspaceId: string) {
+    applyUnroutedFallback(event: ParsedSseEvent, workspaceId: string, currentInstanceId?: string) {
       let fallback = Object.entries(this.fallbackByChatKey)
-        .filter(([, item]) => item.workspaceId === workspaceId)
+        .filter(([, item]) => item.workspaceId === workspaceId && item.instanceId === currentInstanceId)
         .sort(([, a], [, b]) => b.createdAt - a.createdAt)[0]?.[1];
 
       // 如果消息来自 VS Code 侧直接触发，Web 端没有本地 user 消息，也没有 sendStream 创建的 fallback candidate。
       // 此时只要当前最后一条不是未完成的 assistant 占位，就自动补一条 assistant 来承接后续流式事件。
       if (!fallback) {
         if (!this.canCreateFallbackForEvent(event.event)) return;
-        fallback = this.ensureExternalAssistantPlaceholder(workspaceId);
+        fallback = this.ensureExternalAssistantPlaceholder(workspaceId, currentInstanceId);
       }
       const messages = this.ensureMessages(fallback.workspaceId, fallback.instanceId);
       const target = messages.find((item) => item.id === fallback.messageId);
@@ -297,14 +297,14 @@ export const useChatStore = defineStore('chat', {
     canCreateFallbackForEvent(eventName: string): boolean {
       return CREATABLE_FALLBACK_EVENTS.has(eventName);
     },
-    ensureExternalAssistantPlaceholder(workspaceId: string) {
-      const key = chatKey(workspaceId);
-      const messages = this.ensureMessages(workspaceId);
+    ensureExternalAssistantPlaceholder(workspaceId: string, instanceId?: string) {
+      const key = chatKey(workspaceId, instanceId);
+      const messages = this.ensureMessages(workspaceId, instanceId);
       const last = messages[messages.length - 1];
       if (last?.role === 'assistant' && (last.status === 'pending' || last.status === 'sending' || last.status === 'streaming')) {
         const fallback = {
           workspaceId,
-          instanceId: undefined,
+          instanceId,
           messageId: last.id,
           createdAt: Date.now(),
         };
@@ -316,6 +316,7 @@ export const useChatStore = defineStore('chat', {
       messages.push({
         id: messageId,
         workspaceId,
+        instanceId,
         role: 'assistant',
         content: '',
         createdAt: new Date().toISOString(),
@@ -326,7 +327,7 @@ export const useChatStore = defineStore('chat', {
       });
       const fallback = {
         workspaceId,
-        instanceId: undefined,
+        instanceId,
         messageId,
         createdAt: Date.now(),
       };
