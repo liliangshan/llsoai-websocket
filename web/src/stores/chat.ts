@@ -23,6 +23,20 @@ interface ChatState {
   error: string | null;
 }
 
+const CREATABLE_FALLBACK_EVENTS = new Set([
+  'model.request_started',
+  'message_start',
+  'model.text_delta',
+  'content_delta',
+  'model.reasoning_delta',
+  'reasoning_delta',
+  'model.tool_call_started',
+  'tool_call',
+  'model.tool_call_delta',
+  'model.assistant_delta',
+  'model.assistant_final',
+]);
+
 function chatKey(workspaceId: string, instanceId?: string): string {
   return `${workspaceId}:${instanceId ?? 'default'}`;
 }
@@ -263,16 +277,62 @@ export const useChatStore = defineStore('chat', {
       );
     },
     applyUnroutedFallback(event: ParsedSseEvent, workspaceId: string) {
-      const fallback = Object.entries(this.fallbackByChatKey)
+      let fallback = Object.entries(this.fallbackByChatKey)
         .filter(([, item]) => item.workspaceId === workspaceId)
         .sort(([, a], [, b]) => b.createdAt - a.createdAt)[0]?.[1];
-      if (!fallback) return;
+
+      // 如果消息来自 VS Code 侧直接触发，Web 端没有本地 user 消息，也没有 sendStream 创建的 fallback candidate。
+      // 此时只要当前最后一条不是未完成的 assistant 占位，就自动补一条 assistant 来承接后续流式事件。
+      if (!fallback) {
+        if (!this.canCreateFallbackForEvent(event.event)) return;
+        fallback = this.ensureExternalAssistantPlaceholder(workspaceId);
+      }
       const messages = this.ensureMessages(fallback.workspaceId, fallback.instanceId);
       const target = messages.find((item) => item.id === fallback.messageId);
       if (!target) return;
       this.applyEventToMessage(target, event);
       if (target.status === 'sending') target.status = 'streaming';
       if (this.isTerminalEvent(event.event)) this.deleteFallbackByMessageId(fallback.messageId);
+    },
+    canCreateFallbackForEvent(eventName: string): boolean {
+      return CREATABLE_FALLBACK_EVENTS.has(eventName);
+    },
+    ensureExternalAssistantPlaceholder(workspaceId: string) {
+      const key = chatKey(workspaceId);
+      const messages = this.ensureMessages(workspaceId);
+      const last = messages[messages.length - 1];
+      if (last?.role === 'assistant' && (last.status === 'pending' || last.status === 'sending' || last.status === 'streaming')) {
+        const fallback = {
+          workspaceId,
+          instanceId: undefined,
+          messageId: last.id,
+          createdAt: Date.now(),
+        };
+        this.fallbackByChatKey[key] = fallback;
+        return fallback;
+      }
+
+      const messageId = newId('assistant');
+      messages.push({
+        id: messageId,
+        workspaceId,
+        role: 'assistant',
+        content: '',
+        createdAt: new Date().toISOString(),
+        status: 'streaming',
+        source: 'current',
+        toolCalls: [],
+        toolResults: [],
+      });
+      const fallback = {
+        workspaceId,
+        instanceId: undefined,
+        messageId,
+        createdAt: Date.now(),
+      };
+      this.fallbackByChatKey[key] = fallback;
+      this.activeMessageId = messageId;
+      return fallback;
     },
     deleteFallbackByMessageId(messageId: string) {
       for (const [key, fallback] of Object.entries(this.fallbackByChatKey)) {
