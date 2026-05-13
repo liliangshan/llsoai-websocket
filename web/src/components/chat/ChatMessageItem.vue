@@ -7,6 +7,11 @@
         <el-tag v-if="message.status !== 'done'" size="small" type="warning">{{ message.status }}</el-tag>
       </div>
       <pre v-if="message.content" class="message-content">{{ message.content }}</pre>
+      <div v-else-if="message.role === 'assistant' && (message.status === 'pending' || message.status === 'sending' || message.status === 'streaming')" class="message-placeholder">
+        <span class="message-placeholder-dot" />
+        <span class="message-placeholder-dot" />
+        <span class="message-placeholder-dot" />
+      </div>
       <div v-if="message.streamingToolName" class="message-tool-calling">
         <span class="tool-calling-dot" />
         {{ t('common.callingTool') }}{{ message.streamingToolName }}
@@ -52,6 +57,35 @@ defineProps<{ message: ChatMessage }>();
 
 .message-error__text {
   flex: 1;
+}
+
+.message-placeholder {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 20px;
+  padding: 4px 0;
+}
+
+.message-placeholder-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--el-text-color-secondary);
+  animation: message-placeholder-bounce 1.2s ease-in-out infinite;
+}
+
+.message-placeholder-dot:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.message-placeholder-dot:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes message-placeholder-bounce {
+  0%, 80%, 100% { opacity: 0.35; transform: translateY(0); }
+  40% { opacity: 1; transform: translateY(-3px); }
 }
 
 .message-tool-calling {
