@@ -22,21 +22,24 @@
         </el-tag>
         <span class="message-error__text">{{ message.error.message }}</span>
       </div>
-      <el-collapse v-if="message.reasoning || message.toolCalls?.length || message.toolResults?.length">
+      <el-collapse v-if="message.reasoning || visibleToolNames.length">
         <el-collapse-item :title="t('common.details')">
           <pre v-if="message.reasoning">{{ message.reasoning }}</pre>
-          <pre v-if="message.toolCalls?.length">{{ message.toolCalls }}</pre>
-          <pre v-if="message.toolResults?.length">{{ message.toolResults }}</pre>
+          <div v-if="visibleToolNames.length" class="message-tool-list">
+            <div v-for="name in visibleToolNames" :key="name" class="message-tool-name">{{ name }}</div>
+          </div>
         </el-collapse-item>
       </el-collapse>
     </div>
   </div>
 </template>
 <script setup lang="ts">
+import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { ChatMessage } from '@/types/chat';
 const { t } = useI18n();
-defineProps<{ message: ChatMessage }>();
+const props = defineProps<{ message: ChatMessage }>();
+const visibleToolNames = computed(() => Array.from(new Set((props.message.toolCalls ?? []).map((item) => item.name).filter(Boolean))));
 </script>
 
 <style scoped>
@@ -99,6 +102,21 @@ defineProps<{ message: ChatMessage }>();
   border-radius: 6px;
   color: var(--el-color-warning-dark-2);
   font-size: 13px;
+  line-height: 1.4;
+}
+
+.message-tool-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.message-tool-name {
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--el-fill-color-light);
+  color: var(--el-text-color-regular);
+  font-size: 12px;
   line-height: 1.4;
 }
 
