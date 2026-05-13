@@ -22,12 +22,12 @@
         </el-tag>
         <span class="message-error__text">{{ message.error.message }}</span>
       </div>
-      <el-collapse v-if="message.reasoning || visibleToolNames.length">
+      <div v-if="visibleToolNames.length" class="message-tool-list">
+        <div v-for="name in visibleToolNames" :key="name" class="message-tool-name">{{ name }}</div>
+      </div>
+      <el-collapse v-if="message.reasoning">
         <el-collapse-item :title="t('common.details')">
           <pre v-if="message.reasoning">{{ message.reasoning }}</pre>
-          <div v-if="visibleToolNames.length" class="message-tool-list">
-            <div v-for="name in visibleToolNames" :key="name" class="message-tool-name">{{ name }}</div>
-          </div>
         </el-collapse-item>
       </el-collapse>
     </div>
@@ -109,6 +109,7 @@ const visibleToolNames = computed(() => Array.from(new Set((props.message.toolCa
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+  margin-top: 8px;
 }
 
 .message-tool-name {
